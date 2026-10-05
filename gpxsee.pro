@@ -17,6 +17,7 @@ QT += core \
     serialport \
     multimedia \
     multimediawidgets
+QT += xml
 greaterThan(QT_MAJOR_VERSION, 5) {
     QT += openglwidgets
 }
