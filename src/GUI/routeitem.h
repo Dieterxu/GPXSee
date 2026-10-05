@@ -24,8 +24,12 @@ public:
 
 	ToolTip info(bool extended) const;
 
+protected:
+	void updateTrimPath();
+
 private:
 	QVector<WaypointItem*> _waypoints;
+	QVector<QDateTime> _routeTimes;
 };
 
 #endif // ROUTEITEM_H

@@ -1,5 +1,6 @@
 #include <QPainter>
 #include <QCursor>
+#include <QGraphicsSceneMouseEvent>
 #include "font.h"
 #include "legendentryitem.h"
 
@@ -69,4 +70,13 @@ void LegendEntryItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event)
 	update();
 
 	emit selected(false);
+}
+
+void LegendEntryItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
+{
+	if (event->button() == Qt::LeftButton) {
+		event->accept();
+		emit editRequested();
+	} else
+		event->ignore();
 }

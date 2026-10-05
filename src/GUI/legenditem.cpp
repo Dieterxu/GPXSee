@@ -50,6 +50,8 @@ void LegendItem::addItem(PathItem *item)
 	  li->boundingRect().width()), _items.size() * li->boundingRect().height());
 
 	QObject::connect(li, &LegendEntryItem::selected, item, &PathItem::hoverAll);
+	QObject::connect(li, &LegendEntryItem::editRequested, this,
+	  [this, item]() { emit editRequested(item->file(), item->name()); });
 }
 
 void LegendItem::addItem(PlaneItem *item)

@@ -5,6 +5,7 @@
 #include <QGestureEvent>
 #include <QScrollBar>
 #include <QGraphicsSimpleTextItem>
+#include <QGraphicsRectItem>
 #include <QPalette>
 #include <QLocale>
 #include <QOpenGLWidget>
@@ -62,6 +63,17 @@ GraphView::GraphView(QWidget *parent)
 	_slider->setZValue(4.0);
 	_sliderInfo = new SliderInfoItem(_slider);
 	_sliderInfo->setZValue(4.0);
+	_secondSlider = new SliderItem();
+	_secondSlider->setColor(QColor(30, 100, 220));
+	_secondSlider->setZValue(4.0);
+	_secondSliderInfo = new SliderInfoItem(_secondSlider);
+	_secondSliderInfo->setColor(QColor(30, 100, 220));
+	_deltaInfo = new QGraphicsSimpleTextItem();
+	_deltaInfo->setZValue(5.0);
+	_deltaBackground = new QGraphicsRectItem();
+	_deltaBackground->setZValue(4.9);
+	_deltaBackground->setPen(Qt::NoPen);
+	_deltaBackground->setBrush(QColor(255, 255, 255, 210));
 	_info = new InfoItem();
 	_grid = new GridItem();
 	_message = new QGraphicsSimpleTextItem(tr("Data not available"));
@@ -69,6 +81,8 @@ GraphView::GraphView(QWidget *parent)
 
 	connect(_slider, &SliderItem::positionChanged, this,
 	  &GraphView::emitSliderPositionChanged);
+	connect(_secondSlider, &SliderItem::positionChanged, this,
+	  &GraphView::updateSecondSlider);
 
 	_width = 1;
 
@@ -80,6 +94,8 @@ GraphView::GraphView(QWidget *parent)
 	_minYRange = 0.01;
 
 	_sliderPos = 0;
+	_secondSliderPos = 0;
+	_showSliderInfo = true;
 
 	_units = Metric;
 	_graphType = Distance;
@@ -89,6 +105,8 @@ GraphView::GraphView(QWidget *parent)
 
 	_angleDelta = 0;
 	_dragStart = 0;
+	_alignGraph = 0;
+	_alignStartX = _alignStartOffset = _alignStartScale = 0;
 }
 
 GraphView::~GraphView()
@@ -98,6 +116,9 @@ GraphView::~GraphView()
 	delete _xAxisLabel;
 	delete _yAxisLabel;
 	delete _slider;
+	delete _secondSlider;
+	delete _deltaInfo;
+	delete _deltaBackground;
 	delete _info;
 	delete _grid;
 	delete _message;
@@ -199,6 +220,7 @@ void GraphView::setGraphType(GraphType type)
 		  : _graphs.first()->timeAtDistance(_sliderPos);
 	else
 		_sliderPos = 0;
+	_secondSliderPos = bounds().right();
 
 	redraw();
 }
@@ -210,22 +232,41 @@ void GraphView::showGrid(bool show)
 
 void GraphView::showSliderInfo(bool show)
 {
+	_showSliderInfo = show;
 	_sliderInfo->setVisible(show);
+	_secondSliderInfo->setVisible(show);
+	_deltaInfo->setVisible(show);
+	_deltaBackground->setVisible(show);
+	updateIntersectionLabels();
 }
 
 void GraphView::addGraph(GraphItem *graph)
 {
+	bool first = _graphs.isEmpty();
 	_graphs.append(graph);
+	QGraphicsSimpleTextItem *firstLabel = new QGraphicsSimpleTextItem(_slider);
+	QGraphicsSimpleTextItem *secondLabel = new QGraphicsSimpleTextItem(_secondSlider);
+	firstLabel->setZValue(5.0);
+	secondLabel->setZValue(5.0);
+	_firstYLabels.append(firstLabel);
+	_secondYLabels.append(secondLabel);
 	if (!graph->bounds().isNull())
 		_scene->addItem(graph);
 	_bounds |= graph->bounds();
+	if (first)
+		_secondSliderPos = bounds().right();
 
 	setXUnits();
 }
 
 void GraphView::removeGraph(GraphItem *graph)
 {
-	_graphs.removeOne(graph);
+	int index = _graphs.indexOf(graph);
+	if (index < 0)
+		return;
+	_graphs.removeAt(index);
+	delete _firstYLabels.takeAt(index);
+	delete _secondYLabels.takeAt(index);
 	_scene->removeItem(graph);
 
 	_bounds = QRectF();
@@ -233,6 +274,15 @@ void GraphView::removeGraph(GraphItem *graph)
 		_bounds |= _graphs.at(i)->bounds();
 
 	setXUnits();
+}
+
+void GraphView::refreshTimeBounds()
+{
+	_bounds = QRectF();
+	for (GraphItem *graph : _graphs)
+		_bounds |= graph->bounds();
+	setXUnits();
+	redraw();
 }
 
 void GraphView::removeItem(QGraphicsItem *item)
@@ -272,6 +322,9 @@ void GraphView::redraw(const QSizeF &size)
 		removeItem(_xAxisLabel);
 		removeItem(_yAxisLabel);
 		removeItem(_slider);
+		removeItem(_secondSlider);
+		removeItem(_deltaInfo);
+		removeItem(_deltaBackground);
 		removeItem(_info);
 		removeItem(_grid);
 		if (_graphs.isEmpty())
@@ -288,6 +341,9 @@ void GraphView::redraw(const QSizeF &size)
 	addItem(_xAxisLabel);
 	addItem(_yAxisLabel);
 	addItem(_slider);
+	addItem(_secondSlider);
+	addItem(_deltaInfo);
+	addItem(_deltaBackground);
 	addItem(_info);
 	addItem(_grid);
 
@@ -336,7 +392,13 @@ void GraphView::redraw(const QSizeF &size)
 	_grid->setPos(r.bottomLeft());
 
 	_slider->setArea(r);
+	_secondSlider->setArea(r);
 	updateSliderPosition();
+	_secondSliderPos = qBound(bounds().left(), _secondSliderPos,
+	  bounds().right());
+	_secondSlider->setPos((_secondSliderPos / bounds().width())
+	  * _secondSlider->area().width(), _secondSlider->area().bottom());
+	updateSliderInfo();
 
 	_info->setPos(QPointF(r.width()/2 - IW(_info)/2 - (IW(_yAxisLabel)
 	  + IW(_yAxis))/2 + r.left(), r.top() - IH(_info) - my.height()));
@@ -357,9 +419,36 @@ void GraphView::resizeEvent(QResizeEvent *e)
 
 void GraphView::mousePressEvent(QMouseEvent *e)
 {
-	if (e->button() == Qt::LeftButton)
-		newSliderPosition(mapToScene(POS(e)));
-	else if (e->button() == Qt::RightButton)
+	if (_graphType == Time && e->button() == Qt::LeftButton
+	  && (e->modifiers() & Qt::ShiftModifier)) {
+		GraphItem *item = dynamic_cast<GraphItem*>(itemAt(POS(e)));
+		if (item && !item->sourceFile().isEmpty() && item->timeScale() > 0) {
+			qreal x = mapToScene(POS(e)).x() / item->timeScale();
+			GraphItem::SegmentTime segment = item->date(x);
+			if (segment.date.isValid()) {
+				qreal elapsed = x - item->timeOffset();
+				emit trimPointSelected(item->sourceFile(),
+				  segment.date.addMSecs(qRound64((elapsed - segment.time)
+				  * 1000)));
+				e->accept();
+				return;
+			}
+		}
+	}
+	if (_graphType == Time && e->button() == Qt::LeftButton
+	  && (e->modifiers() & Qt::AltModifier)) {
+		_alignGraph = dynamic_cast<GraphItem*>(itemAt(POS(e)));
+		if (_alignGraph && !_alignGraph->sourceFile().isEmpty()) {
+			_alignStartX = POS(e).x();
+			_alignStartOffset = _alignGraph->timeOffset();
+			_alignStartScale = _alignGraph->timeScale();
+			viewport()->setCursor(Qt::SizeHorCursor);
+			e->accept();
+			return;
+		}
+		_alignGraph = 0;
+	}
+	if (e->button() == Qt::RightButton)
 		_dragStart = POS(e).x();
 
 	QGraphicsView::mousePressEvent(e);
@@ -367,6 +456,14 @@ void GraphView::mousePressEvent(QMouseEvent *e)
 
 void GraphView::mouseMoveEvent(QMouseEvent *e)
 {
+	if (_alignGraph) {
+		if (_alignStartScale > 0)
+			emit timeOffsetChanged(_alignGraph->sourceFile(),
+			  _alignStartOffset + (POS(e).x() - _alignStartX)
+			  / _alignStartScale);
+		e->accept();
+		return;
+	}
 	if (e->buttons() & Qt::RightButton) {
 		QScrollBar *sb = horizontalScrollBar();
 		int x = POS(e).x();
@@ -375,6 +472,17 @@ void GraphView::mouseMoveEvent(QMouseEvent *e)
 	}
 
 	QGraphicsView::mouseMoveEvent(e);
+}
+
+void GraphView::mouseReleaseEvent(QMouseEvent *e)
+{
+	if (_alignGraph && e->button() == Qt::LeftButton) {
+		_alignGraph = 0;
+		viewport()->unsetCursor();
+		e->accept();
+		return;
+	}
+	QGraphicsView::mouseReleaseEvent(e);
 }
 
 void GraphView::wheelEvent(QWheelEvent *e)
@@ -429,6 +537,9 @@ void GraphView::paintEvent(QPaintEvent *e)
 	  _info->pos().y()));
 	_xAxisLabel->setPos(QPointF(viewRect.left() + (viewRect.width()
 	  - IW(_xAxisLabel))/2.0, _xAxisLabel->pos().y()));
+	_deltaInfo->setPos(QPointF(_grid->pos().x() + MARGIN,
+	  _grid->pos().y() - _grid->boundingRect().height() + MARGIN));
+	_deltaBackground->setPos(_deltaInfo->pos());
 
 	QGraphicsView::paintEvent(e);
 }
@@ -449,15 +560,24 @@ void GraphView::plot(QPainter *painter, const QRectF &target, qreal scale)
 
 void GraphView::clear()
 {
+	_alignGraph = 0;
 	_graphs.clear();
+	qDeleteAll(_firstYLabels);
+	qDeleteAll(_secondYLabels);
+	_firstYLabels.clear();
+	_secondYLabels.clear();
 
 	_slider->clear();
+	_secondSlider->clear();
+	_deltaInfo->setText(QString());
+	_deltaBackground->setRect(QRectF());
 	_info->clear();
 
 	_palette.reset();
 
 	_bounds = QRectF();
 	_sliderPos = 0;
+	_secondSliderPos = 0;
 	_zoom = 1.0;
 
 	removeItem(_xAxis);
@@ -465,6 +585,9 @@ void GraphView::clear()
 	removeItem(_xAxisLabel);
 	removeItem(_yAxisLabel);
 	removeItem(_slider);
+	removeItem(_secondSlider);
+	removeItem(_deltaInfo);
+	removeItem(_deltaBackground);
 	removeItem(_info);
 	removeItem(_grid);
 	removeItem(_message);
@@ -494,40 +617,85 @@ bool GraphView::singleGraph() const
 void GraphView::updateSliderInfo()
 {
 	QLocale l(QLocale::system());
-	qreal r = 0, y = 0;
-	const GraphItem *cardinal = singleGraph() ? _graphs.first() : 0;
-
-	if (cardinal) {
-		QRectF br(_bounds);
-		if (br.height() < _minYRange)
-			br.adjust(0, -(_minYRange/2 - br.height()/2), 0,
-			  _minYRange/2 - br.height()/2);
-
-		y = -cardinal->yAtX(_sliderPos);
-		if (!std::isnan(y))
-			r = (y - br.bottom()) / br.height();
-	}
 
 	qreal pos = (_sliderPos / bounds().width()) * _slider->area().width();
 	SliderInfoItem::Side s = (pos + _sliderInfo->boundingRect().width()
 	  > _slider->area().right()) ? SliderInfoItem::Left : SliderInfoItem::Right;
 
 	_sliderInfo->setSide(s);
-	_sliderInfo->setPos(QPointF(0, _slider->boundingRect().height() * r));
-	QString xText(_graphType == Time ? Format::timeSpan(_sliderPos,
-	  bounds().width() > 3600) : l.toString(_sliderPos * _xScale, 'f', 1)
-	  + UNIT_SPACE + _xUnits);
-	QString yText((!cardinal || std::isnan(y))
-	  ? QString()
-	  : l.toString(-y * _yScale + _yOffset, 'f', _precision) + UNIT_SPACE
-	    + _yUnits);
-	if (cardinal && cardinal->secondaryGraph()) {
-		qreal delta = y + cardinal->secondaryGraph()->yAtX(_sliderPos);
-		if (!(std::isnan(y) || std::isnan(delta)))
-			yText += QString(" ") + QChar(0x0394) + l.toString(-delta * _yScale
-			  + _yOffset, 'f', _precision) + UNIT_SPACE + _yUnits;
+	_sliderInfo->setPos(QPointF(0, 0));
+	QString xTextValue(xText(_sliderPos));
+	_sliderInfo->setText(xTextValue, QString());
+	_secondSliderInfo->setSide(_secondSliderPos >
+	  (bounds().left() + bounds().right()) / 2
+	  ? SliderInfoItem::Left : SliderInfoItem::Right);
+	_secondSliderInfo->setPos(0, 0);
+	_secondSliderInfo->setText(xText(_secondSliderPos), QString());
+	qreal dx = qAbs(_secondSliderPos - _sliderPos);
+	QString deltaX = _graphType == Time ? Format::timeSpan(dx, dx > 3600)
+	  : l.toString(dx * _xScale, 'f', 1) + UNIT_SPACE + _xUnits;
+	QStringList deltaYs;
+	for (int i = 0; i < _graphs.size(); i++) {
+		qreal a = _graphs.at(i)->yAtX(_sliderPos);
+		qreal b = _graphs.at(i)->yAtX(_secondSliderPos);
+		if (std::isfinite(a) && std::isfinite(b))
+			deltaYs.append(l.toString(qAbs(b - a) * _yScale, 'f',
+			  _precision) + UNIT_SPACE + _yUnits);
 	}
-	_sliderInfo->setText(xText, yText);
+	_deltaInfo->setText(QString::fromUtf8("Δx: ") + deltaX
+	  + QString::fromUtf8("   Δy: ") + deltaYs.join(" / "));
+	_deltaBackground->setRect(_deltaInfo->boundingRect().adjusted(-3, -2,
+	  3, 2));
+	updateIntersectionLabels();
+}
+
+void GraphView::updateIntersectionLabels()
+{
+	QRectF br(_bounds);
+	if (br.height() < _minYRange)
+		br.adjust(0, -(_minYRange/2 - br.height()/2), 0,
+		  _minYRange/2 - br.height()/2);
+	for (int i = 0; i < _graphs.size(); i++) {
+		for (int marker = 0; marker < 2; marker++) {
+			QGraphicsSimpleTextItem *label = marker
+			  ? _secondYLabels.at(i) : _firstYLabels.at(i);
+			qreal x = marker ? _secondSliderPos : _sliderPos;
+			qreal value = _graphs.at(i)->yAtX(x);
+			bool valid = _showSliderInfo && std::isfinite(value);
+			label->setVisible(valid);
+			if (!valid)
+				continue;
+			QString prefix = _graphs.size() > 1
+			  ? QString::number(i + 1) + ": " : QString();
+			label->setText(prefix + QLocale::system().toString(value
+			  * _yScale + _yOffset, 'f', _precision) + UNIT_SPACE + _yUnits);
+			label->setBrush(_graphs.at(i)->displayColor());
+			qreal y = (-(value) - br.bottom()) / br.height()
+			  * _slider->area().height();
+			qreal labelY = y - label->boundingRect().height() - 2;
+			if (_slider->area().bottom() + labelY
+			  < _slider->area().top())
+				labelY = y + 2;
+			label->setPos(marker ? -label->boundingRect().width() - 6 : 6,
+			  labelY);
+		}
+	}
+}
+
+QString GraphView::xText(qreal x) const
+{
+	return _graphType == Time ? Format::timeSpan(x, bounds().width() > 3600)
+	  : QLocale::system().toString(x * _xScale, 'f', 1) + UNIT_SPACE + _xUnits;
+}
+
+void GraphView::updateSecondSlider(const QPointF &pos)
+{
+	if (_secondSlider->area().width() <= 0)
+		return;
+	_secondSliderPos = qBound(bounds().left(),
+	  pos.x() / _secondSlider->area().width() * bounds().width(),
+	  bounds().right());
+	updateSliderInfo();
 }
 
 void GraphView::emitSliderPositionChanged(const QPointF &pos)
@@ -550,12 +718,6 @@ void GraphView::setSliderPosition(qreal pos)
 
 	_sliderPos = pos;
 	updateSliderPosition();
-}
-
-void GraphView::newSliderPosition(const QPointF &pos)
-{
-	if (_slider->area().contains(pos))
-		_slider->setPos(pos);
 }
 
 void GraphView::addInfo(const QString &key, const QString &value)

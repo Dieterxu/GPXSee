@@ -22,10 +22,12 @@ public:
 
 signals:
 	void selected(bool);
+	void editRequested();
 
 private:
 	void hoverEnterEvent(QGraphicsSceneHoverEvent *event);
 	void hoverLeaveEvent(QGraphicsSceneHoverEvent *event);
+	void mousePressEvent(QGraphicsSceneMouseEvent *event);
 
 	QRectF _boundingRect;
 	QColor _color, _textColor;

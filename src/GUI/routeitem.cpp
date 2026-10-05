@@ -1,4 +1,5 @@
 #include <QLocale>
+#include <cmath>
 #include <QFileInfo>
 #include "data/waypoint.h"
 #include "data/route.h"
@@ -48,14 +49,52 @@ RouteItem::RouteItem(const Route &route, Map *map, QGraphicsItem *parent)
 	const RouteData &waypoints = route.data();
 
 	_waypoints.resize(waypoints.size());
-	for (int i = 0; i < waypoints.size(); i++)
+	_routeTimes.reserve(waypoints.size());
+	for (int i = 0; i < waypoints.size(); i++) {
 		_waypoints[i] = new WaypointItem(waypoints.at(i), map, this);
+		_routeTimes.append(waypoints.at(i).timestamp());
+	}
 
 	_name = route.name();
 	_desc = route.description();
 	_comment = route.comment();
 	_links = route.links();
 	_file = route.file();
+}
+
+void RouteItem::updateTrimPath()
+{
+	buildTrimPath(NAN, NAN);
+	if (!trimPreviewEnabled() || !trimStart().isValid()
+	  || !trimEnd().isValid() || trimStart() >= trimEnd()
+	  || _routeTimes.size() < 2 || !_routeTimes.first().isValid()
+	  || !_routeTimes.last().isValid())
+		return;
+	if (trimEnd() <= _routeTimes.first()
+	  || trimStart() >= _routeTimes.last())
+		return;
+
+	const PathSegment &points = path().first();
+	auto distanceAt = [&](const QDateTime &time) -> qreal {
+		if (time <= _routeTimes.first())
+			return points.first().distance();
+		if (time >= _routeTimes.last())
+			return points.last().distance();
+		for (int i = 1; i < _routeTimes.size(); i++) {
+			if (!_routeTimes.at(i-1).isValid() || !_routeTimes.at(i).isValid()
+			  || time < _routeTimes.at(i-1) || time > _routeTimes.at(i))
+				continue;
+			qint64 span = _routeTimes.at(i-1).msecsTo(_routeTimes.at(i));
+			if (span <= 0)
+				continue;
+			qreal fraction = _routeTimes.at(i-1).msecsTo(time)
+			  / static_cast<qreal>(span);
+			return points.at(i-1).distance() + fraction
+			  * (points.at(i).distance() - points.at(i-1).distance());
+		}
+		return NAN;
+	};
+	buildTrimPath(distanceAt(trimStart()), distanceAt(trimEnd()));
 }
 
 void RouteItem::setMap(Map *map)

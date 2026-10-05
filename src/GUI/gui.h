@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QString>
 #include <QList>
+#include <QHash>
 #include <QDate>
 #include <QPrinter>
 #include "common/treenode.h"
@@ -28,6 +29,7 @@ class QGeoPositionInfoSource;
 class QPermission;
 class FileBrowser;
 class GraphTab;
+class GraphItem;
 class MapView;
 class Map;
 class POI;
@@ -59,6 +61,10 @@ private slots:
 	void printFile();
 	void exportPDFFile();
 	void exportPNGFile();
+	void trimGPX();
+	void renameFile(const QString &file, const QString &name);
+	void alignFileTime(const QString &file, qreal offset);
+	void selectTrimPoint(const QString &file, const QDateTime &time);
 	void openFile();
 	void openDir();
 #ifdef Q_OS_ANDROID
@@ -261,6 +267,7 @@ private:
 	QAction *_printFileAction;
 	QAction *_exportPDFFileAction;
 	QAction *_exportPNGFileAction;
+	QAction *_trimGPXAction;
 	QAction *_openFileAction;
 	QAction *_openDirAction;
 	QAction *_browseDirAction;
@@ -354,12 +361,16 @@ private:
 
 	FileBrowser *_browser;
 	QList<QString> _files;
+	QList<GraphItem*> _allGraphItems;
+	QString _trimFile;
+	QDateTime _trimStart, _trimEnd;
 
 	int _trackCount, _routeCount, _areaCount, _waypointCount;
 	qreal _trackDistance, _routeDistance;
 	qreal _time, _movingTime;
 	DateTimeRange _dateRange;
 	QString _pathName;
+	QHash<QString, QString> _displayNames;
 
 #ifndef Q_OS_ANDROID
 	QList<QByteArray> _windowStates;

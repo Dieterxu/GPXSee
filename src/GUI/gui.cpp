@@ -26,6 +26,11 @@
 #include <QStyle>
 #include <QTabBar>
 #include <QPushButton>
+#include <QDateTimeEdit>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QInputDialog>
+#include <QSlider>
 #include <QGeoPositionInfoSource>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
 #include <QPermissions>
@@ -62,6 +67,7 @@
 #include "mapaction.h"
 #include "poiaction.h"
 #include "navigationwidget.h"
+#include "gpxtrim.h"
 #include "macos.h"
 #include "gui.h"
 
@@ -272,6 +278,11 @@ void GUI::createActions()
 	_exportPNGFileAction->setActionGroup(_fileActionGroup);
 	connect(_exportPNGFileAction, &QAction::triggered, this, &GUI::exportPNGFile);
 	addAction(_exportPNGFileAction);
+	_trimGPXAction = new QAction(tr("Trim GPX..."), this);
+	_trimGPXAction->setMenuRole(QAction::NoRole);
+	_trimGPXAction->setActionGroup(_fileActionGroup);
+	connect(_trimGPXAction, &QAction::triggered, this, &GUI::trimGPX);
+	addAction(_trimGPXAction);
 	_closeFileAction = new QAction(QIcon::fromTheme(CLOSE_FILE_NAME,
 	  QIcon(CLOSE_FILE_ICON)), tr("Close"), this);
 	_closeFileAction->setMenuRole(QAction::NoRole);
@@ -766,6 +777,7 @@ void GUI::createMenus()
 #endif // Q_OS_ANDROID
 	fileMenu->addAction(_exportPDFFileAction);
 	fileMenu->addAction(_exportPNGFileAction);
+	fileMenu->addAction(_trimGPXAction);
 	fileMenu->addSeparator();
 	fileMenu->addAction(_statisticsAction);
 	fileMenu->addSeparator();
@@ -972,6 +984,7 @@ void GUI::createMapView()
 	_map = new EmptyMap(this);
 
 	_mapView = new MapView(_map, _poi, this);
+	connect(_mapView, &MapView::renameRequested, this, &GUI::renameFile);
 	_mapView->setSizePolicy(QSizePolicy(QSizePolicy::Ignored,
 	  QSizePolicy::Expanding));
 #ifdef Q_OS_ANDROID
@@ -1004,9 +1017,14 @@ void GUI::createGraphTabs()
 	_tabs.append(new TemperatureGraph(_graphTabWidget));
 	_tabs.append(new GearRatioGraph(_graphTabWidget));
 
-	for (int i = 0; i < _tabs.size(); i++)
+	for (int i = 0; i < _tabs.size(); i++) {
 		connect(_tabs.at(i), &GraphTab::sliderPositionChanged, _mapView,
 		  &MapView::setMarkerPosition);
+		connect(_tabs.at(i), &GraphTab::timeOffsetChanged, this,
+		  &GUI::alignFileTime);
+		connect(_tabs.at(i), &GraphTab::trimPointSelected, this,
+		  &GUI::selectTrimPoint);
+	}
 }
 
 void GUI::createStatusBar()
@@ -1077,8 +1095,12 @@ void GUI::keys()
 	  + tr("Toggle graph type") + "</td><td><i>"
 	  + QKeySequence(TOGGLE_GRAPH_TYPE_KEY).toString() + "</i></td></tr><tr><td>"
 	  + tr("Toggle time type") + "</td><td><i>"
-	  + QKeySequence(TOGGLE_TIME_TYPE_KEY).toString() + "</i></td></tr><tr><td>"
-	  + tr("Toggle position info") + "</td><td><i>"
+		  + QKeySequence(TOGGLE_TIME_TYPE_KEY).toString() + "</i></td></tr><tr><td>"
+		  + tr("Align file on time graph") + "</td><td><i>"
+		  + tr("Option/Alt + drag curve") + "</i></td></tr><tr><td>"
+		  + tr("Select GPX trim bounds") + "</td><td><i>"
+		  + tr("Shift + click curve twice") + "</i></td></tr><tr><td>"
+		  + tr("Toggle position info") + "</td><td><i>"
 	  + QKeySequence(TOGGLE_MARKER_INFO_KEY).toString() + "</i></td></tr>"
 	  + "<tr><td></td><td></td></tr><tr><td>" + tr("Next map") + "</td><td><i>"
 	  + NEXT_MAP_SHORTCUT.toString() + "</i></td></tr><tr><td>"
@@ -1359,6 +1381,12 @@ void GUI::loadData(const Data &data)
 	if (updateGraphTabs())
 		_splitter->refresh();
 	paths = _mapView->loadData(data);
+	if (!paths.isEmpty() && paths.first()
+	  && _displayNames.contains(paths.first()->file())) {
+		QString file = paths.first()->file();
+		_mapView->renameFile(file, _displayNames.value(file));
+		_pathName = _displayNames.value(file);
+	}
 
 	GraphTab *gt = static_cast<GraphTab*>(_graphTabWidget->currentWidget());
 
@@ -1367,8 +1395,18 @@ void GUI::loadData(const Data &data)
 		if (!pi)
 			continue;
 
-		for (int j = 0; j < graphs.count(); j++)
-			pi->addGraph(graphs.at(j).at(i));
+		for (int j = 0; j < graphs.count(); j++) {
+			GraphItem *item = graphs.at(j).at(i);
+			pi->addGraph(item);
+			if (item) {
+				item->setSourceFile(pi->file());
+				_allGraphItems.append(item);
+				if (item->secondaryGraph()) {
+					item->secondaryGraph()->setSourceFile(pi->file());
+					_allGraphItems.append(item->secondaryGraph());
+				}
+			}
+		}
 
 		if (gt) {
 			pi->setGraph(_tabs.indexOf(gt));
@@ -1377,6 +1415,17 @@ void GUI::loadData(const Data &data)
 	}
 
 	updateDataDEMDownloadAction();
+}
+
+void GUI::alignFileTime(const QString &file, qreal offset)
+{
+	for (GraphItem *item : _allGraphItems)
+		if (item->sourceFile() == file)
+			item->setTimeOffset(offset);
+	for (GraphTab *tab : _tabs)
+		tab->refreshTimeBounds();
+	statusBar()->showMessage(tr("Time offset: %1 s (temporary)")
+	  .arg(offset, 0, 'f', 1), 3000);
 }
 
 void GUI::openPOIFile()
@@ -1458,6 +1507,167 @@ void GUI::exportPDFFile()
 	printer.setOutputFileName(_pdfExport.fileName);
 
 	plot(&printer);
+}
+
+void GUI::trimGPX()
+{
+	QStringList files;
+	for (const QString &file : _files)
+		if (QFileInfo(file).suffix().compare("gpx", Qt::CaseInsensitive) == 0)
+			files.append(file);
+	if (files.isEmpty()) {
+		QMessageBox::information(this, APP_NAME, tr("Load a GPX file first."));
+		return;
+	}
+	bool selected = true;
+	QString source = files.contains(_trimFile) ? _trimFile
+	  : files.size() == 1 ? files.first()
+	  : QInputDialog::getItem(this, tr("Trim GPX"), tr("File:"), files,
+	    0, false, &selected);
+	if (!selected || source.isEmpty())
+		return;
+	QDateTime first, last;
+	QString error;
+	if (!GPXTrim::range(source, first, last, error)) {
+		QMessageBox::warning(this, APP_NAME, error);
+		return;
+	}
+	QDateTime selectedStart = _trimStart;
+	QDateTime selectedEnd = _trimEnd;
+	_trimFile.clear();
+	_trimStart = _trimEnd = QDateTime();
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Trim GPX"));
+	QFormLayout layout(&dialog);
+	QDateTimeEdit startEdit(selectedStart.isValid()
+	  ? selectedStart.toUTC() : first.toUTC(), &dialog);
+	QDateTimeEdit endEdit(selectedEnd.isValid()
+	  ? selectedEnd.toUTC() : last.toUTC(), &dialog);
+	for (QDateTimeEdit *edit : {&startEdit, &endEdit}) {
+		edit->setTimeSpec(Qt::UTC);
+		edit->setDisplayFormat("yyyy-MM-dd HH:mm:ss.zzz 'UTC'");
+		edit->setCalendarPopup(true);
+		edit->setMinimumDateTime(first.toUTC());
+		edit->setMaximumDateTime(last.toUTC());
+	}
+	qint64 duration = first.msecsTo(last);
+	qint64 step = qMax<qint64>(1, duration / 2147483647 + 1);
+	int steps = static_cast<int>(duration / step
+	  + (duration % step ? 1 : 0));
+	auto timeAt = [&](int value) {
+		return first.addMSecs(qMin(duration, value * step));
+	};
+	auto startStepAt = [&](const QDateTime &time) {
+		return static_cast<int>(qBound<qint64>(0,
+		  first.msecsTo(time) / step, steps));
+	};
+	auto endStepAt = [&](const QDateTime &time) {
+		qint64 elapsed = qMax<qint64>(0, first.msecsTo(time));
+		return static_cast<int>(qMin<qint64>(steps,
+		  elapsed / step + (elapsed % step ? 1 : 0)));
+	};
+	QSlider startSlider(Qt::Horizontal, &dialog);
+	QSlider endSlider(Qt::Horizontal, &dialog);
+	startSlider.setRange(0, steps);
+	endSlider.setRange(0, steps);
+	startSlider.setValue(startStepAt(startEdit.dateTime()));
+	endSlider.setValue(qMax(startSlider.value() + 1,
+	  endStepAt(endEdit.dateTime())));
+	startSlider.setMaximum(endSlider.value() - 1);
+	endSlider.setMinimum(startSlider.value() + 1);
+	startEdit.setMaximumDateTime(endEdit.dateTime().addMSecs(-1));
+	endEdit.setMinimumDateTime(startEdit.dateTime().addMSecs(1));
+	connect(&startSlider, &QSlider::valueChanged, &dialog,
+	  [&](int value) { startEdit.setDateTime(timeAt(value)); });
+	connect(&endSlider, &QSlider::valueChanged, &dialog,
+	  [&](int value) { endEdit.setDateTime(timeAt(value)); });
+	connect(&startEdit, &QDateTimeEdit::dateTimeChanged, &dialog,
+	  [&](const QDateTime &time) {
+		endEdit.setMinimumDateTime(time.addMSecs(1));
+		startSlider.setValue(startStepAt(time));
+		endSlider.setMinimum(startSlider.value() + 1);
+		_mapView->setTrimPreview(source, startEdit.dateTime(),
+		  endEdit.dateTime());
+	  });
+	connect(&endEdit, &QDateTimeEdit::dateTimeChanged, &dialog,
+	  [&](const QDateTime &time) {
+		startEdit.setMaximumDateTime(time.addMSecs(-1));
+		endSlider.setValue(endStepAt(time));
+		startSlider.setMaximum(endSlider.value() - 1);
+		_mapView->setTrimPreview(source, startEdit.dateTime(),
+		  endEdit.dateTime());
+	  });
+	layout.addRow(tr("Start:"), &startEdit);
+	layout.addRow(tr("Start position:"), &startSlider);
+	layout.addRow(tr("End:"), &endEdit);
+	layout.addRow(tr("End position:"), &endSlider);
+	QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+	  &dialog);
+	connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+	layout.addRow(&buttons);
+	_mapView->setTrimPreview(source, startEdit.dateTime(), endEdit.dateTime());
+	int result = dialog.exec();
+	_mapView->setTrimPreview(QString(), QDateTime(), QDateTime());
+	if (result != QDialog::Accepted)
+		return;
+	QString exportName = _displayNames.value(source,
+	  QFileInfo(source).completeBaseName());
+	exportName.replace(QRegularExpression("[/\\\\:]"), "_");
+	QString target = QFileDialog::getSaveFileName(this, tr("Save trimmed GPX"),
+	  QFileInfo(source).absolutePath() + "/"
+	  + exportName + "-trimmed.gpx", tr("GPX files (*.gpx)"));
+	if (target.isEmpty())
+		return;
+	if (!target.endsWith(".gpx", Qt::CaseInsensitive))
+		target += ".gpx";
+	if (!GPXTrim::save(source, target, startEdit.dateTime(),
+	  endEdit.dateTime(), error, _displayNames.value(source))) {
+		QMessageBox::warning(this, APP_NAME, error);
+		return;
+	}
+	int showError = 2;
+	openFile(target, true, showError);
+}
+
+void GUI::renameFile(const QString &file, const QString &name)
+{
+	bool accepted = false;
+	QString current = _displayNames.value(file,
+	  name.isEmpty() ? QFileInfo(file).completeBaseName() : name);
+	QString renamed = QInputDialog::getText(this, tr("Rename GPX"),
+	  tr("Name:"), QLineEdit::Normal, current, &accepted).trimmed();
+	if (!accepted || renamed.isEmpty())
+		return;
+	_displayNames.insert(file, renamed);
+	_mapView->renameFile(file, renamed);
+	if (_files.size() == 1)
+		_pathName = renamed;
+	updateStatusBarInfo();
+}
+
+void GUI::selectTrimPoint(const QString &file, const QDateTime &time)
+{
+	if (QFileInfo(file).suffix().compare("gpx", Qt::CaseInsensitive) != 0)
+		return;
+	if (_trimFile != file || !_trimStart.isValid()) {
+		_trimFile = file;
+		_trimStart = time;
+		_trimEnd = QDateTime();
+		statusBar()->showMessage(tr("Trim start selected. Shift-click the end "
+		  "on the same curve."), 5000);
+		return;
+	}
+	_trimEnd = time;
+	if (_trimEnd == _trimStart) {
+		statusBar()->showMessage(tr("Choose a different trim end point."),
+		  5000);
+		_trimEnd = QDateTime();
+		return;
+	}
+	if (_trimEnd < _trimStart)
+		qSwap(_trimStart, _trimEnd);
+	trimGPX();
 }
 
 void GUI::exportPNGFile()
@@ -1730,6 +1940,9 @@ void GUI::plot(QPrinter *printer)
 
 void GUI::reloadFiles()
 {
+	_trimFile.clear();
+	_trimStart = _trimEnd = QDateTime();
+	_allGraphItems.clear();
 	_trackCount = 0;
 	_routeCount = 0;
 	_waypointCount = 0;
@@ -1767,6 +1980,9 @@ void GUI::reloadFiles()
 
 void GUI::closeFiles()
 {
+	_trimFile.clear();
+	_trimStart = _trimEnd = QDateTime();
+	_allGraphItems.clear();
 	_trackCount = 0;
 	_routeCount = 0;
 	_waypointCount = 0;
@@ -2261,7 +2477,8 @@ void GUI::updateStatusBarInfo()
 	if (_files.count() == 0)
 		_fileNameLabel->setText(tr("No files loaded"));
 	else if (_files.count() == 1)
-		_fileNameLabel->setText(Util::displayName(_files.at(0)));
+		_fileNameLabel->setText(_displayNames.value(_files.at(0),
+		  Util::displayName(_files.at(0))));
 	else
 		_fileNameLabel->setText(tr("%n files", "", _files.count()));
 

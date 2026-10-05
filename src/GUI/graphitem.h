@@ -35,6 +35,7 @@ public:
 
 	GraphType graphType() const {return _type;}
 	const QRectF &bounds() const {return _bounds;}
+	const QColor &displayColor() const {return _color;}
 
 	qreal max() const;
 	qreal min() const;
@@ -54,6 +55,11 @@ public:
 	qreal distanceAtTime(qreal time) const;
 	qreal timeAtDistance(qreal distance) const;
 	qreal duration() const {return _graph.last().last().t();}
+	const QString &sourceFile() const {return _sourceFile;}
+	void setSourceFile(const QString &file) {_sourceFile = file;}
+	qreal timeOffset() const {return _timeOffset;}
+	qreal timeScale() const {return _sx;}
+	void setTimeOffset(qreal offset);
 	SegmentTime date(qreal x);
 
 	void redraw();
@@ -80,6 +86,8 @@ private:
 	const QColor &color() const;
 
 	Graph _graph;
+	QString _sourceFile;
+	qreal _timeOffset;
 
 	QColor _color;
 	GraphType _type;

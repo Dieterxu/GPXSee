@@ -38,6 +38,7 @@ class PlaneItem;
 class MapItem;
 class Area;
 class QTimeZone;
+class QDateTime;
 class MapAction;
 class CrosshairItem;
 class MotionInfoItem;
@@ -66,6 +67,14 @@ public:
 	void setMap(Map *map);
 	void setPositionSource(QGeoPositionInfoSource *source);
 	void setGraph(int index);
+	void setTrimPreview(const QString &file, const QDateTime &start,
+	  const QDateTime &end);
+	void renameFile(const QString &file, const QString &name);
+
+signals:
+	void renameRequested(const QString &file, const QString &name);
+
+public:
 	void showExtendedInfo(bool show) {_scene->showExtendedInfo(show);}
 
 	void plot(QPainter *painter, const QRectF &target, qreal scale, Flags flags);

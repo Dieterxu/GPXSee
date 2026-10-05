@@ -6,6 +6,7 @@
 #include <QScrollBar>
 #include <QClipboard>
 #include <QOpenGLWidget>
+#include <QFileInfo>
 #include <QGeoPositionInfoSource>
 #include "data/poi.h"
 #include "data/data.h"
@@ -142,6 +143,8 @@ MapView::MapView(Map *map, POI *poi, QWidget *parent)
 
 	connect(_map, &Map::tilesLoaded, this, &MapView::reloadMap);
 	connect(_poi, &POI::pointsChanged, this, &MapView::updatePOI);
+	connect(_legend, &LegendItem::editRequested, this,
+	  &MapView::renameRequested);
 
 	centerOn(_scene->sceneRect().center());
 }
@@ -171,6 +174,19 @@ void MapView::updateLegend()
 		for (int i = 0; i < _areas.size(); i++)
 			_legend->addItem(_areas.at(i));
 	}
+}
+
+void MapView::renameFile(const QString &file, const QString &name)
+{
+	for (TrackItem *item : _tracks)
+		if (item->file() == file)
+			item->setName(name);
+	for (RouteItem *item : _routes)
+		if (item->file() == file)
+			item->setName(name);
+	updateLegend();
+	_legend->setPos(mapToScene(rect().topRight() + QPoint(
+	  -(LEGEND_OFFSET + _legend->boundingRect().width()), LEGEND_OFFSET)));
 }
 
 PathItem *MapView::addTrack(const Track &track)
@@ -1414,6 +1430,22 @@ void MapView::setMarkerPosition(qreal pos)
 		_tracks.at(i)->setMarkerPosition(pos);
 	for (int i = 0; i < _routes.size(); i++)
 		_routes.at(i)->setMarkerPosition(pos);
+}
+
+void MapView::setTrimPreview(const QString &file, const QDateTime &start,
+  const QDateTime &end)
+{
+	QString canonical = QFileInfo(file).canonicalFilePath();
+	for (TrackItem *item : _tracks)
+		item->setTrimPreview(!file.isEmpty() && (item->file() == file
+		  || (!canonical.isEmpty() && QFileInfo(item->file()).canonicalFilePath()
+		  == canonical)),
+		  start, end);
+	for (RouteItem *item : _routes)
+		item->setTrimPreview(!file.isEmpty() && (item->file() == file
+		  || (!canonical.isEmpty() && QFileInfo(item->file()).canonicalFilePath()
+		  == canonical)),
+		  start, end);
 }
 
 void MapView::reloadMap()

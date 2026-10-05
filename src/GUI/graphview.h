@@ -17,6 +17,7 @@ class GraphItem;
 class PathItem;
 class GridItem;
 class QGraphicsSimpleTextItem;
+class QGraphicsRectItem;
 class GraphicsScene;
 class QGestureEvent;
 class QPinchGesture;
@@ -44,11 +45,14 @@ public:
 
 	void setSliderPosition(qreal pos);
 	void setSliderColor(const QColor &color);
+	void refreshTimeBounds();
 
 	qreal sliderPosition() const {return _sliderPos;}
 
 signals:
 	void sliderPositionChanged(qreal);
+	void timeOffsetChanged(const QString &file, qreal offset);
+	void trimPointSelected(const QString &file, const QDateTime &time);
 
 protected:
 	void addGraph(GraphItem *graph);
@@ -59,6 +63,7 @@ protected:
 	void resizeEvent(QResizeEvent *e);
 	void mousePressEvent(QMouseEvent *e);
 	void mouseMoveEvent(QMouseEvent *e);
+	void mouseReleaseEvent(QMouseEvent *e);
 	void wheelEvent(QWheelEvent *e);
 	void changeEvent(QEvent *e);
 	void paintEvent(QPaintEvent *e);
@@ -88,13 +93,15 @@ protected:
 
 private slots:
 	void emitSliderPositionChanged(const QPointF &pos);
-	void newSliderPosition(const QPointF &pos);
 
 private:
 	void redraw(const QSizeF &size);
 	void setXUnits();
 	void updateSliderPosition();
 	void updateSliderInfo();
+	void updateSecondSlider(const QPointF &pos);
+	QString xText(qreal x) const;
+	void updateIntersectionLabels();
 	void removeItem(QGraphicsItem *item);
 	void addItem(QGraphicsItem *item);
 	bool singleGraph() const;
@@ -107,6 +114,11 @@ private:
 	AxisLabelItem *_xAxisLabel, *_yAxisLabel;
 	SliderItem *_slider;
 	SliderInfoItem *_sliderInfo;
+	SliderItem *_secondSlider;
+	SliderInfoItem *_secondSliderInfo;
+	QGraphicsSimpleTextItem *_deltaInfo;
+	QGraphicsRectItem *_deltaBackground;
+	QList<QGraphicsSimpleTextItem*> _firstYLabels, _secondYLabels;
 	InfoItem *_info;
 	GridItem *_grid;
 	QGraphicsSimpleTextItem *_message;
@@ -114,6 +126,8 @@ private:
 
 	QRectF _bounds;
 	qreal _sliderPos;
+	qreal _secondSliderPos;
+	bool _showSliderInfo;
 
 	qreal _xScale, _yScale;
 	qreal _yOffset;
@@ -126,6 +140,8 @@ private:
 
 	int _angleDelta;
 	int _dragStart;
+	GraphItem *_alignGraph;
+	qreal _alignStartX, _alignStartOffset, _alignStartScale;
 };
 
 #endif // GRAPHVIEW_H

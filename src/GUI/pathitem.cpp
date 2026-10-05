@@ -41,6 +41,8 @@ PathItem::PathItem(const Path &path, Map *map, QGraphicsItem *parent)
 	_showVideo = false;
 	_showTicks = false;
 	_showPoints = false;
+	_trimPreview = false;
+	_trimMarkerVisible = false;
 	_markerInfoType = MarkerInfoItem::None;
 
 	_pen = QPen(color(), width());
@@ -143,11 +145,119 @@ void PathItem::updatePainterPath()
 	}
 }
 
+void PathItem::setTrimPreview(bool enabled, const QDateTime &start,
+  const QDateTime &end)
+{
+	if (enabled && !_trimPreview) {
+		_trimMarkerVisible = _marker->isVisible();
+		_marker->hide();
+	} else if (!enabled && _trimPreview)
+		_marker->setVisible(_trimMarkerVisible);
+	_trimPreview = enabled;
+	_trimStart = start;
+	_trimEnd = end;
+	updateTrimPath();
+	update();
+}
+
+void PathItem::updateTrimPath()
+{
+	buildTrimPath(NAN, NAN);
+	if (!_trimPreview || !_date.isValid() || !_trimStart.isValid()
+	  || !_trimEnd.isValid() || _trimStart >= _trimEnd)
+		return;
+
+	GraphItem *graph = _graph;
+	if (!graph) {
+		for (GraphItem *candidate : _graphs)
+			if (candidate) {
+				graph = candidate;
+				break;
+			}
+	}
+	if (!graph)
+		return;
+
+	qreal firstTime = qMax<qreal>(0, _date.msecsTo(_trimStart) / 1000.0);
+	qreal lastTime = qMin<qreal>(graph->duration(),
+	  _date.msecsTo(_trimEnd) / 1000.0);
+	if (firstTime >= lastTime)
+		return;
+	qreal firstDistance = graph->distanceAtTime(firstTime
+	  + graph->timeOffset());
+	qreal lastDistance = graph->distanceAtTime(lastTime
+	  + graph->timeOffset());
+	if (std::isnan(firstDistance) || std::isnan(lastDistance)
+	  || firstDistance >= lastDistance)
+		return;
+	buildTrimPath(firstDistance, lastDistance);
+}
+
+void PathItem::buildTrimPath(qreal firstDistance, qreal lastDistance)
+{
+	_trimPath = QPainterPath();
+	_trimStartPoint = _trimEndPoint = QPointF(NAN, NAN);
+	if (std::isnan(firstDistance) || std::isnan(lastDistance)
+	  || firstDistance >= lastDistance)
+		return;
+	firstDistance = qMax(firstDistance,
+	  _path.first().first().distance());
+	lastDistance = qMin(lastDistance,
+	  _path.last().last().distance());
+	if (firstDistance >= lastDistance)
+		return;
+
+	for (const PathSegment &segment : _path) {
+		qreal begin = qMax(firstDistance, segment.first().distance());
+		qreal finish = qMin(lastDistance, segment.last().distance());
+		if (begin >= finish)
+			continue;
+		QPointF beginPoint = (begin == segment.first().distance())
+		  ? _map->ll2xy(segment.first().coordinates()) : position(begin);
+		QPointF endPoint = (finish == segment.last().distance())
+		  ? _map->ll2xy(segment.last().coordinates()) : position(finish);
+		_trimPath.moveTo(beginPoint);
+		for (const PathPoint &point : segment)
+			if (point.distance() > begin && point.distance() < finish)
+				_trimPath.lineTo(_map->ll2xy(point.coordinates()));
+		_trimPath.lineTo(endPoint);
+	}
+	if (_trimPath.elementCount()) {
+		_trimStartPoint = _trimPath.elementAt(0);
+		_trimEndPoint = _trimPath.elementAt(_trimPath.elementCount() - 1);
+	}
+}
+
 void PathItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
   QWidget *widget)
 {
 	Q_UNUSED(option);
 	Q_UNUSED(widget);
+	if (_trimPreview) {
+		painter->save();
+		painter->setOpacity(0.3);
+		painter->setPen(_pen);
+		painter->drawPath(_painterPath);
+		painter->setOpacity(1.0);
+		QPen highlight(QColor(0, 180, 255), qMax<qreal>(_pen.widthF() + 2,
+		  5 * pow(2, -_digitalZoom)), Qt::SolidLine, Qt::RoundCap,
+		  Qt::RoundJoin);
+		painter->setPen(highlight);
+		painter->drawPath(_trimPath);
+		qreal radius = 6 * pow(2, -_digitalZoom);
+		if (isValid(_trimStartPoint)) {
+			painter->setPen(QPen(Qt::white, 2 * pow(2, -_digitalZoom)));
+			painter->setBrush(QColor(0, 170, 70));
+			painter->drawEllipse(_trimStartPoint, radius, radius);
+		}
+		if (isValid(_trimEndPoint)) {
+			painter->setPen(QPen(Qt::white, 2 * pow(2, -_digitalZoom)));
+			painter->setBrush(QColor(220, 50, 50));
+			painter->drawEllipse(_trimEndPoint, radius, radius);
+		}
+		painter->restore();
+		return;
+	}
 
 	if (_showPoints) {
 		QPen lp(_pen);
@@ -178,6 +288,7 @@ void PathItem::setMap(Map *map)
 	_map = map;
 
 	updatePainterPath();
+	updateTrimPath();
 	updateShape();
 	updateTicks();
 
@@ -369,7 +480,8 @@ void PathItem::setMarkerPosition(qreal pos)
 				? _graph->timeAtDistance(pos) : pos
 			  : NAN;
 			if (!std::isnan(time))
-				_video->seek(time, _graph->duration());
+				_video->seek(time - _graph->timeOffset(),
+				  _graph->duration());
 		}
 	} else
 		_marker->setVisible(false);
@@ -385,7 +497,8 @@ void PathItem::setMarkerInfo(qreal pos)
 			  ? pos : _graph->timeAtDistance(pos);
 			GraphItem::SegmentTime st(_graph->date(pos));
 			if (st.date.isValid() && !std::isnan(time))
-				date = st.date.addSecs(time - st.time);
+				date = st.date.addSecs(time - _graph->timeOffset()
+				  - st.time);
 		}
 
 		if (date.isValid())
@@ -599,7 +712,8 @@ void PathItem::enableVideo(bool enable)
 
 			qreal time = _graph ? _graph->timeAtDistance(_markerDistance) : NAN;
 			if (!std::isnan(time))
-				_video->seek(time, _graph->duration());
+				_video->seek(time - _graph->timeOffset(),
+				  _graph->duration());
 		}
 	} else {
 		if (_video) {

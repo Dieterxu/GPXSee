@@ -31,17 +31,19 @@ static QString deg2DMM(double val)
 QString Format::timeSpan(qreal time, bool full)
 {
 	unsigned h, m, s;
+	bool negative = time < 0;
+	time = qAbs(time);
 
 	h = time / 3600;
 	m = (time - (h * 3600)) / 60;
 	s = time - (h * 3600) - (m * 60);
 
-	if (full || h)
-		return QString("%1:%2:%3").arg(h, 2, 10, QChar('0'))
-		  .arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'));
-	else
-		return QString("%1:%2").arg(m, 2, 10, QChar('0'))
-		  .arg(s, 2, 10, QChar('0'));
+	QString result = (full || h)
+	  ? QString("%1:%2:%3").arg(h, 2, 10, QChar('0'))
+	    .arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'))
+	  : QString("%1:%2").arg(m, 2, 10, QChar('0'))
+	    .arg(s, 2, 10, QChar('0'));
+	return negative ? "-" + result : result;
 }
 
 QString Format::distance(qreal value, Units units)

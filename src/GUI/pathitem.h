@@ -2,6 +2,7 @@
 #define PATHITEM_H
 
 #include <QPen>
+#include <QDateTime>
 #include <QTimeZone>
 #include "data/path.h"
 #include "data/link.h"
@@ -25,13 +26,15 @@ public:
 	virtual ~PathItem() {}
 
 	QPainterPath shape() const {return _shape;}
-	QRectF boundingRect() const {return _shape.boundingRect();}
+	QRectF boundingRect() const
+	  {return _shape.boundingRect().adjusted(-10, -10, 10, 10);}
 	void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
 	  QWidget *widget);
 
 	const QDateTime &date() const {return _date;}
 	const QString &file() const {return _file;}
 	const QString &name() const {return _name;}
+	void setName(const QString &name) {_name = name;}
 	const Path &path() const {return _path;}
 	const QColor &color() const;
 
@@ -54,6 +57,8 @@ public:
 	void showVideo(bool show);
 
 	void setMarkerPosition(qreal pos);
+	void setTrimPreview(bool enabled, const QDateTime &start = QDateTime(),
+	  const QDateTime &end = QDateTime());
 
 	void updateTicks();
 	void updateMarkerInfo();
@@ -70,6 +75,11 @@ signals:
 	void selected(bool);
 
 protected:
+	virtual void updateTrimPath();
+	void buildTrimPath(qreal firstDistance, qreal lastDistance);
+	bool trimPreviewEnabled() const {return _trimPreview;}
+	const QDateTime &trimStart() const {return _trimStart;}
+	const QDateTime &trimEnd() const {return _trimEnd;}
 	void hoverEnterEvent(QGraphicsSceneHoverEvent *event);
 	void hoverLeaveEvent(QGraphicsSceneHoverEvent *event);
 	void mousePressEvent(QGraphicsSceneMouseEvent *event);
@@ -114,6 +124,11 @@ private:
 	QPen _pen;
 	QPainterPath _shape;
 	QPainterPath _painterPath;
+	QPainterPath _trimPath;
+	QPointF _trimStartPoint, _trimEndPoint;
+	QDateTime _trimStart, _trimEnd;
+	bool _trimPreview;
+	bool _trimMarkerVisible;
 
 	qreal _width;
 	QColor _color;

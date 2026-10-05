@@ -6,7 +6,8 @@
 
 GraphItem::GraphItem(const Graph &graph, GraphType type, int width,
   const QColor &color, Qt::PenStyle style, QGraphicsItem *parent)
-  : GraphicsItem(parent), _graph(graph), _type(type), _secondaryGraph(0)
+  : GraphicsItem(parent), _graph(graph), _timeOffset(0), _type(type),
+    _secondaryGraph(0)
 {
 	_units = Metric;
 	_sx = 0; _sy = 0;
@@ -57,6 +58,16 @@ void GraphItem::setGraphType(GraphType type)
 	updateBounds();
 }
 
+void GraphItem::setTimeOffset(qreal offset)
+{
+	if (_timeOffset == offset)
+		return;
+	prepareGeometryChange();
+	_timeOffset = offset;
+	updatePath();
+	updateBounds();
+}
+
 const QColor &GraphItem::color() const
 {
 	return (_useStyle && _graph.color().isValid())
@@ -103,9 +114,9 @@ const GraphSegment *GraphItem::segment(qreal x, GraphType type) const
 	while (low <= high) {
 		mid = (high + low) / 2;
 		const GraphPoint &p = _graph.at(mid).last();
-		if (p.x(_type) > x)
+		if (p.x(type) > x)
 			high = mid - 1;
-		else if (p.x(_type) < x)
+		else if (p.x(type) < x)
 			low = mid + 1;
 		else
 			return &(_graph.at(mid));
@@ -119,6 +130,8 @@ const GraphSegment *GraphItem::segment(qreal x, GraphType type) const
 
 qreal GraphItem::yAtX(qreal x) const
 {
+	if (_type == Time)
+		x -= _timeOffset;
 	const GraphSegment *seg = segment(x, _type);
 	if (!seg)
 		return NAN;
@@ -154,6 +167,7 @@ qreal GraphItem::yAtX(qreal x) const
 
 qreal GraphItem::distanceAtTime(qreal time) const
 {
+	time -= _timeOffset;
 	if (!_time)
 		return NAN;
 
@@ -214,7 +228,7 @@ qreal GraphItem::timeAtDistance(qreal distance) const
 		else if (p.s() < distance)
 			low = mid + 1;
 		else
-			return seg->at(mid).t();
+			return seg->at(mid).t() + _timeOffset;
 	}
 
 	QLineF l;
@@ -225,11 +239,14 @@ qreal GraphItem::timeAtDistance(qreal distance) const
 		l = QLineF(seg->at(mid-1).s(), seg->at(mid-1).t(),
 		  seg->at(mid).s(), seg->at(mid).t());
 
-	return l.pointAt((distance - l.p1().x()) / (l.p2().x() - l.p1().x())).y();
+	return l.pointAt((distance - l.p1().x()) / (l.p2().x() - l.p1().x())).y()
+	  + _timeOffset;
 }
 
 GraphItem::SegmentTime GraphItem::date(qreal x)
 {
+	if (_type == Time)
+		x -= _timeOffset;
 	const GraphSegment *seg = segment(x, _type);
 	return seg ? SegmentTime(seg->start(), seg->first().t()) : SegmentTime();
 }
@@ -266,12 +283,14 @@ void GraphItem::updatePath()
 	if (!((_type == Time && !_time) || _sx == 0 || _sy == 0)) {
 		for (int i = 0; i < _graph.size(); i++) {
 			const GraphSegment &segment = _graph.at(i);
-			QPointF p1(segment.first().x(_type) * _sx, -segment.first().y()
+			QPointF p1((segment.first().x(_type)
+			  + (_type == Time ? _timeOffset : 0)) * _sx, -segment.first().y()
 			  * _sy);
 
 			_path.moveTo(p1);
 			for (int j = 1; j < segment.size(); j++) {
-				QPointF p2(segment.at(j).x(_type) * _sx, -segment.at(j).y()
+				QPointF p2((segment.at(j).x(_type)
+				  + (_type == Time ? _timeOffset : 0)) * _sx, -segment.at(j).y()
 				  * _sy);
 				QPointF diff(p1 - p2);
 				if (qAbs(diff.x()) >= 1.0 || qAbs(diff.y()) >= 1.0) {
@@ -294,7 +313,8 @@ void GraphItem::updateBounds()
 
 	qreal bottom, top, left, right;
 
-	QPointF p = QPointF(_graph.first().first().x(_type),
+	QPointF p = QPointF(_graph.first().first().x(_type)
+	  + (_type == Time ? _timeOffset : 0),
 	  -_graph.first().first().y());
 	bottom = p.y(); top = p.y(); left = p.x(); right = p.x();
 
@@ -302,7 +322,8 @@ void GraphItem::updateBounds()
 		const GraphSegment &segment = _graph.at(i);
 
 		for (int j = 0; j < segment.size(); j++) {
-			p = QPointF(segment.at(j).x(_type), -segment.at(j).y());
+			p = QPointF(segment.at(j).x(_type)
+			  + (_type == Time ? _timeOffset : 0), -segment.at(j).y());
 			bottom = qMax(bottom, p.y()); top = qMin(top, p.y());
 			right = qMax(right, p.x()); left = qMin(left, p.x());
 		}
